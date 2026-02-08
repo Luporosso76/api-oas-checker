@@ -77,20 +77,24 @@ jobs:
                         "fileMap[filePath].rulesetName === 'Italian Guidelines Full'")
           wp.write_text(s, encoding="utf-8")
 
-          # 2) Stringhe UI principali
+          # 2) Stringhe UI principali (sorgenti)
           replacements = {
             "Step 1. Load the OpenAPI interface": "Step 1. Carica l'interfaccia OpenAPI",
-            "Step 2. Choose a ruleset": "Step 2. Scegli un ruleset",
-            "Step 4. Run Validation": "Step 4. Avvia la validazione",
+            "Step 2. Choose a ruleset": "Step 2. Scegli il ruleset",
+            "Step 3. Validation Results": "Step 3. Risultati validazione",
+            "Step 4. Run Validation": "Step 4. Avvia validazione",
             "Validating...": "Validazione in corso...",
             "Check API": "Valida API",
             "Load OpenAPI ...": "Carica OpenAPI ...",
+            "Load OpenAPI": "Carica OpenAPI",
             "Validation Results": "Risultati validazione",
-            "Current Ruleset Bundle:": "Bundle Ruleset corrente:",
+            "Current Ruleset Bundle:": "Bundle ruleset corrente:",
             "No errors": "Nessun errore",
             "No warnings": "Nessun warning",
+            "No hints": "Nessun suggerimento",
             "errors": "errori",
-            "warnings": "warning"
+            "warnings": "warning",
+            "hints": "suggerimenti"
           }
 
           for p in Path("src").rglob("*.js"):
@@ -123,6 +127,60 @@ jobs:
 
       - name: Build dist (production)
         run: NODE_ENV=production yarn build-js
+
+      # ENFORCE ITALIANO anche sui file minificati finali (dist)
+      - name: Enforce Italian UI in dist (post-build)
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+            "Step 1. Load the OpenAPI interface": "Step 1. Carica l'interfaccia OpenAPI",
+            "Step 2. Choose a ruleset": "Step 2. Scegli il ruleset",
+            "Step 3. Validation Results": "Step 3. Risultati validazione",
+            "Step 4. Run Validation": "Step 4. Avvia validazione",
+            "Validating...": "Validazione in corso...",
+            "Check API": "Valida API",
+            "Load OpenAPI ...": "Carica OpenAPI ...",
+            "Load OpenAPI": "Carica OpenAPI",
+            "Validation Results": "Risultati validazione",
+            "Current Ruleset Bundle:": "Bundle ruleset corrente:",
+            "No errors": "Nessun errore",
+            "No warnings": "Nessun warning",
+            "No hints": "Nessun suggerimento",
+            "errors": "errori",
+            "warnings": "warning",
+            "hints": "suggerimenti",
+            "Error loading document from URL:": "Errore nel caricamento del documento da URL:",
+            "Validation error:": "Errore di validazione:",
+            "An unknown error occurred in the validation worker.": "Si è verificato un errore sconosciuto nel worker di validazione."
+          }
+
+          files = list(Path("dist").rglob("*.js")) + list(Path("dist").rglob("*.html")) + list(Path("dist").rglob("*.css"))
+          changed = 0
+          total = 0
+          for f in files:
+            txt = f.read_text(encoding="utf-8", errors="ignore")
+            orig = txt
+            for en, it in replacements.items():
+              c = txt.count(en)
+              if c:
+                txt = txt.replace(en, it)
+                total += c
+            if txt != orig:
+              f.write_text(txt, encoding="utf-8")
+              changed += 1
+
+          print(f"[IT] files changed={changed}, replacements={total}")
+          PY
+
+      - name: Verify Italian labels (sanity check)
+        shell: bash
+        run: |
+          set -e
+          if grep -R "Step 1. Load the OpenAPI interface" dist; then echo "EN label found"; exit 1; fi
+          if grep -R "Check API" dist; then echo "EN label found"; exit 1; fi
+          if grep -R "Load OpenAPI" dist; then echo "EN label found"; exit 1; fi
 
       - name: Zip dist
         run: |
