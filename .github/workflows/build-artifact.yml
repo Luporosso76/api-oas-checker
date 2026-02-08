@@ -1,4 +1,4 @@
-name: Build api-oas-checker artifact (full)
+name: Build OAS Checker IT (Full Ruleset)
 
 on:
   workflow_dispatch:
@@ -6,114 +6,131 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      CI: "true"
-      HUSKY: "0"
 
     steps:
-      - name: Checkout
+      - name: Checkout api-oas-checker
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v6
+      - name: Checkout rules repository
+        uses: actions/checkout@v4
         with:
-          node-version: "20"
-          package-manager-cache: false
+          repository: italia/api-oas-checker-rules
+          path: api-oas-checker-rules
 
-      - name: Enable Corepack + Yarn 1
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build rulesets (including Full)
         shell: bash
         run: |
-          corepack enable
-          corepack prepare yarn@1.22.22 --activate
-          yarn --version
-          npm --version
+          set -e
+          cd api-oas-checker-rules
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          mkdir -p rulesets rulesets/functions
 
-      - name: Install deps (robust, with npm fallback)
-        shell: bash
-        run: |
-          set -euo pipefail
-          export YARN_CACHE_FOLDER="$RUNNER_TEMP/yarn-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "$YARN_CACHE_FOLDER"
-          echo "YARN_CACHE_FOLDER=$YARN_CACHE_FOLDER"
-
-          yarn cache clean || true
-
-          if yarn install --frozen-lockfile --non-interactive --cache-folder "$YARN_CACHE_FOLDER"; then
-            echo "PM=yarn" >> "$GITHUB_ENV"
-          else
-            echo "Yarn failed, retrying once..."
-            rm -rf node_modules "$YARN_CACHE_FOLDER"
-            mkdir -p "$YARN_CACHE_FOLDER"
-            if yarn install --frozen-lockfile --non-interactive --force --cache-folder "$YARN_CACHE_FOLDER"; then
-              echo "PM=yarn" >> "$GITHUB_ENV"
+          build_ruleset () {
+            local folders="$1"
+            local name="$2"
+            local outfile="$3"
+            local cfg="${4:-}"
+            export RULES_FOLDERS="$folders"
+            export RULESET_NAME="$name"
+            export RULESET_VERSION="1.0"
+            export RULESET_FILE_NAME="$outfile"
+            export TEMPLATE_FILE="rules/rules-template.yml.template"
+            if [ -n "$cfg" ]; then
+              export CONFIG_FILE="$cfg"
             else
-              echo "Yarn failed again -> npm fallback"
-              rm -rf node_modules package-lock.json
-              npm install --no-audit --no-fund --legacy-peer-deps
-              echo "PM=npm" >> "$GITHUB_ENV"
+              unset CONFIG_FILE || true
             fi
-          fi
+            python builder.py
+          }
 
-      - name: Build checker
-        shell: bash
-        run: |
-          if [ "${PM}" = "yarn" ]; then
-            yarn build-js
-          else
-            npm run build-js
-          fi
+          build_ruleset "rules/" "Italian Guidelines Full" "rulesets/spectral.yml"
+          build_ruleset "rules/" "Best Practices Only" "rulesets/spectral-generic.yml" "override/spectral-generic-override.yml"
+          build_ruleset "security/" "Extra Security Checks" "rulesets/spectral-security.yml"
+          build_ruleset "rules/,security/" "Italian Guidelines Full + Extra Security Checks" "rulesets/spectral-full.yml"
+          build_ruleset "rules/" "Italian Guidelines" "rulesets/spectral-modi.yml" "override/spectral-modi-override.yml"
 
-      - name: Download latest api-oas-checker-rules release assets
-        shell: bash
+          # funzioni custom per spectral
+          cp -f security/functions/* rulesets/functions/ || true
+
+      - name: Copy rulesets into checker repo
         run: |
-          set -euo pipefail
+          set -e
+          rm -rf rulesets
           mkdir -p rulesets
-          python - << 'PY'
-          import json, os, urllib.request
-          url = "https://api.github.com/repos/italia/api-oas-checker-rules/releases/latest"
-          data = json.load(urllib.request.urlopen(url))
-          os.makedirs("rulesets", exist_ok=True)
+          cp -R api-oas-checker-rules/rulesets/* rulesets/
 
-          wanted_ext = (".yml", ".yaml", ".zip", ".js")
-          for a in data.get("assets", []):
-              name = a.get("name", "")
-              dl = a.get("browser_download_url")
-              if dl and name.lower().endswith(wanted_ext):
-                  out = os.path.join("rulesets", name)
-                  urllib.request.urlretrieve(dl, out)
-                  print(f"Downloaded: {name}")
+      - name: Localize UI text to Italian + default Full ruleset
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) Default ruleset => Italian Guidelines Full
+          wp = Path("webpack.config.js")
+          s = wp.read_text(encoding="utf-8")
+          s = s.replace("fileMap[filePath].rulesetName === 'Italian Guidelines'",
+                        "fileMap[filePath].rulesetName === 'Italian Guidelines Full'")
+          wp.write_text(s, encoding="utf-8")
+
+          # 2) Stringhe UI principali
+          replacements = {
+            "Step 1. Load the OpenAPI interface": "Step 1. Carica l'interfaccia OpenAPI",
+            "Step 2. Choose a ruleset": "Step 2. Scegli un ruleset",
+            "Step 4. Run Validation": "Step 4. Avvia la validazione",
+            "Validating...": "Validazione in corso...",
+            "Check API": "Valida API",
+            "Load OpenAPI ...": "Carica OpenAPI ...",
+            "Validation Results": "Risultati validazione",
+            "Current Ruleset Bundle:": "Bundle Ruleset corrente:",
+            "No errors": "Nessun errore",
+            "No warnings": "Nessun warning",
+            "errors": "errori",
+            "warnings": "warning"
+          }
+
+          for p in Path("src").rglob("*.js"):
+            txt = p.read_text(encoding="utf-8")
+            orig = txt
+            for en, it in replacements.items():
+              txt = txt.replace(en, it)
+            if txt != orig:
+              p.write_text(txt, encoding="utf-8")
           PY
 
-      - name: Extract rule zip assets (if any)
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          for z in rulesets/*.zip; do
-            unzip -o "$z" -d rulesets
-          done
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-      - name: Verify required rules exist
-        shell: bash
-        run: |
-          set -euo pipefail
-          ls -la rulesets
-          # almeno il profilo Full deve esserci in una delle forme attese
-          if [ ! -f rulesets/spectral.yml ] && [ ! -f rulesets/spectral-full.yml ]; then
-            echo "Missing spectral rules files in rulesets/"
-            exit 1
-          fi
+      - name: Enable corepack
+        run: corepack enable
 
-      - name: Prepare deploy artifact
+      - name: Install dependencies (retry-safe)
         shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p artifact
-          cp -R dist artifact/dist
-          cp -R rulesets artifact/rulesets
+          set -e
+          yarn --version
+          yarn install --frozen-lockfile --network-timeout 600000 || (
+            echo "Retry after cache clean..."
+            yarn cache clean
+            yarn install --frozen-lockfile --network-timeout 600000
+          )
+
+      - name: Build dist (production)
+        run: NODE_ENV=production yarn build-js
+
+      - name: Zip dist
+        run: |
+          cd dist
+          zip -r ../api-oas-checker-dist-it.zip .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: api-oas-checker-dist-full
-          path: artifact/**
+          name: api-oas-checker-dist-it
+          path: api-oas-checker-dist-it.zip
