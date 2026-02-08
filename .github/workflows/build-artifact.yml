@@ -1,32 +1,39 @@
-name: Build api-oas-checker artifact
-
-on:
-  workflow_dispatch:
-
+# .github/workflows/build.yml
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      CI: "true"
-      HUSKY: "0"
-
+      CI: true
+      HUSKY: 0
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v6
         with:
-          fetch-depth: 0
+          node-version: 20
+          package-manager-cache: false   # disabilita cache automatica
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "yarn"
+      - name: Enable Corepack + pin Yarn 1
+        run: |
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+          yarn --version
 
-      - name: Enable corepack
-        run: corepack enable
+      - name: Clean caches
+        run: |
+          yarn cache clean || true
+          rm -rf ~/.cache/yarn ~/.npm
 
-      - name: Install deps
-        run: yarn install --frozen-lockfile
+      - name: Install deps (retry once)
+        run: |
+          set -e
+          yarn install --frozen-lockfile --non-interactive || {
+            echo "Retry after purge..."
+            yarn cache clean || true
+            rm -rf ~/.cache/yarn ~/.npm
+            yarn install --frozen-lockfile --non-interactive --force
+          }
 
+      # qui i tuoi step build
       - name: Build
-        run: yarn build-js
+        run: yarn build
