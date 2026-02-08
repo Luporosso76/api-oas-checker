@@ -6,43 +6,27 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      CI: "true"
+      HUSKY: "0"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'yarn'
+          node-version: "20"
+          cache: "yarn"
 
-      - name: Enable corepack (yarn)
+      - name: Enable corepack
         run: corepack enable
 
-      - name: Download latest rules release assets
-        uses: robinraju/release-downloader@v1.11
-        with:
-          repository: italia/api-oas-checker-rules
-          latest: true
-          fileName: '*'
-          out-file-path: rulesets/
+      - name: Install deps
+        run: yarn install --frozen-lockfile
 
-      - name: Unzip functions
-        run: |
-          for file in rulesets/*.zip; do
-            unzip -o "$file" -d rulesets/
-          done
-
-      - name: Install deps + build
-        run: |
-          yarn install --frozen-lockfile
-          yarn build-js
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: api-oas-checker-dist
-          path: |
-            dist/**
-            rulesets/**
+      - name: Build
+        run: yarn build-js
