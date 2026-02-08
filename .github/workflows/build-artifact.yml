@@ -25,24 +25,45 @@ jobs:
           corepack enable
           corepack prepare yarn@1.22.22 --activate
           yarn --version
+          npm --version
 
-      - name: Clean caches
+      - name: Install deps (Yarn robust + npm fallback)
+        shell: bash
         run: |
+          set -euo pipefail
+
+          export YARN_CACHE_FOLDER="$RUNNER_TEMP/yarn-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$YARN_CACHE_FOLDER"
+          echo "Using isolated Yarn cache: $YARN_CACHE_FOLDER"
+
+          # pulizia cache (safe)
           yarn cache clean || true
-          rm -rf ~/.cache/yarn ~/.npm
 
-      - name: Install deps (retry once)
-        run: |
-          set -e
-          yarn install --frozen-lockfile --non-interactive || {
-            echo "Retry after purge..."
-            yarn cache clean || true
-            rm -rf ~/.cache/yarn ~/.npm
-            yarn install --frozen-lockfile --non-interactive --force
-          }
+          # tentativo Yarn
+          if yarn install --frozen-lockfile --non-interactive --cache-folder "$YARN_CACHE_FOLDER"; then
+            echo "PM=yarn" >> "$GITHUB_ENV"
+          else
+            echo "Yarn failed, retrying once after purge..."
+            rm -rf node_modules "$YARN_CACHE_FOLDER"
+            mkdir -p "$YARN_CACHE_FOLDER"
+            if yarn install --frozen-lockfile --non-interactive --force --cache-folder "$YARN_CACHE_FOLDER"; then
+              echo "PM=yarn" >> "$GITHUB_ENV"
+            else
+              echo "Yarn still failing -> fallback to npm"
+              rm -rf node_modules package-lock.json
+              npm install --no-audit --no-fund --legacy-peer-deps
+              echo "PM=npm" >> "$GITHUB_ENV"
+            fi
+          fi
 
       - name: Build
-        run: yarn build-js
+        shell: bash
+        run: |
+          if [ "${PM}" = "yarn" ]; then
+            yarn build-js
+          else
+            npm run build-js
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -50,4 +71,3 @@ jobs:
           name: api-oas-checker-dist
           path: |
             dist/**
-            rulesets/**
