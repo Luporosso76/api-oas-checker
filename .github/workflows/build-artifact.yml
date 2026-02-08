@@ -1,4 +1,4 @@
-name: Build api-oas-checker artifact
+name: Build api-oas-checker artifact (full)
 
 on:
   workflow_dispatch:
@@ -21,42 +21,40 @@ jobs:
           package-manager-cache: false
 
       - name: Enable Corepack + Yarn 1
+        shell: bash
         run: |
           corepack enable
           corepack prepare yarn@1.22.22 --activate
           yarn --version
           npm --version
 
-      - name: Install deps (Yarn robust + npm fallback)
+      - name: Install deps (robust, with npm fallback)
         shell: bash
         run: |
           set -euo pipefail
-
           export YARN_CACHE_FOLDER="$RUNNER_TEMP/yarn-cache-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$YARN_CACHE_FOLDER"
-          echo "Using isolated Yarn cache: $YARN_CACHE_FOLDER"
+          echo "YARN_CACHE_FOLDER=$YARN_CACHE_FOLDER"
 
-          # pulizia cache (safe)
           yarn cache clean || true
 
-          # tentativo Yarn
           if yarn install --frozen-lockfile --non-interactive --cache-folder "$YARN_CACHE_FOLDER"; then
             echo "PM=yarn" >> "$GITHUB_ENV"
           else
-            echo "Yarn failed, retrying once after purge..."
+            echo "Yarn failed, retrying once..."
             rm -rf node_modules "$YARN_CACHE_FOLDER"
             mkdir -p "$YARN_CACHE_FOLDER"
             if yarn install --frozen-lockfile --non-interactive --force --cache-folder "$YARN_CACHE_FOLDER"; then
               echo "PM=yarn" >> "$GITHUB_ENV"
             else
-              echo "Yarn still failing -> fallback to npm"
+              echo "Yarn failed again -> npm fallback"
               rm -rf node_modules package-lock.json
               npm install --no-audit --no-fund --legacy-peer-deps
               echo "PM=npm" >> "$GITHUB_ENV"
             fi
           fi
 
-      - name: Build
+      - name: Build checker
         shell: bash
         run: |
           if [ "${PM}" = "yarn" ]; then
@@ -65,9 +63,57 @@ jobs:
             npm run build-js
           fi
 
+      - name: Download latest api-oas-checker-rules release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p rulesets
+          python - << 'PY'
+          import json, os, urllib.request
+          url = "https://api.github.com/repos/italia/api-oas-checker-rules/releases/latest"
+          data = json.load(urllib.request.urlopen(url))
+          os.makedirs("rulesets", exist_ok=True)
+
+          wanted_ext = (".yml", ".yaml", ".zip", ".js")
+          for a in data.get("assets", []):
+              name = a.get("name", "")
+              dl = a.get("browser_download_url")
+              if dl and name.lower().endswith(wanted_ext):
+                  out = os.path.join("rulesets", name)
+                  urllib.request.urlretrieve(dl, out)
+                  print(f"Downloaded: {name}")
+          PY
+
+      - name: Extract rule zip assets (if any)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for z in rulesets/*.zip; do
+            unzip -o "$z" -d rulesets
+          done
+
+      - name: Verify required rules exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la rulesets
+          # almeno il profilo Full deve esserci in una delle forme attese
+          if [ ! -f rulesets/spectral.yml ] && [ ! -f rulesets/spectral-full.yml ]; then
+            echo "Missing spectral rules files in rulesets/"
+            exit 1
+          fi
+
+      - name: Prepare deploy artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          cp -R dist artifact/dist
+          cp -R rulesets artifact/rulesets
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: api-oas-checker-dist
-          path: |
-            dist/**
+          name: api-oas-checker-dist-full
+          path: artifact/**
